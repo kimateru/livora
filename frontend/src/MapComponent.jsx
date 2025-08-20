@@ -15,6 +15,51 @@ const defaultIcon = new L.Icon({
 	shadowSize: [41, 41]
 });
 
+// Create simple emoji-based icons so we don't need external image assets
+const iconCache = new Map();
+function typeFromCategory(category) {
+	const value = String(category || '').toLowerCase();
+	if ([
+		'supermarket','hypermarket','convenience','greengrocer','butcher','bakery','grocery','deli','farm','organic','health_food','cheese','beverages'
+	].includes(value)) return 'grocery';
+	if (value === 'restaurant') return 'restaurant';
+	if (value === 'fast_food') return 'fast_food';
+	if (value === 'cafe') return 'cafe';
+	if (value === 'fuel') return 'fuel';
+	if (['park','garden','recreation_ground','common','nature_reserve'].includes(value)) return 'park';
+	if (value === 'marketplace') return 'market';
+	return 'other';
+}
+
+function createEmojiIcon(emoji, backgroundColor) {
+	return L.divIcon({
+		className: 'emoji-marker',
+		html: `<div class="emoji-pin"><span class="emoji">${emoji}</span></div>`,
+		iconSize: [30, 30],
+		iconAnchor: [15, 30],
+		popupAnchor: [0, -28]
+	});
+}
+
+function getIconForCategory(category) {
+	const type = typeFromCategory(category);
+	if (iconCache.has(type)) return iconCache.get(type);
+	let spec = { emoji: '📍' };
+	switch (type) {
+		case 'grocery': spec = { emoji: '🛒' }; break;
+		case 'restaurant': spec = { emoji: '🍽️' }; break;
+		case 'cafe': spec = { emoji: '☕' }; break;
+		case 'fast_food': spec = { emoji: '🍔' }; break;
+		case 'fuel': spec = { emoji: '⛽' }; break;
+		case 'park': spec = { emoji: '🌳' }; break;
+		case 'market': spec = { emoji: '🧺' }; break;
+		default: break;
+	}
+	const icon = createEmojiIcon(spec.emoji);
+	iconCache.set(type, icon);
+	return icon;
+}
+
 function MapComponent({ facilities, center }) {
 	const mapCenter = Array.isArray(center)
 		? [parseFloat(center[0]), parseFloat(center[1])]
@@ -30,7 +75,7 @@ function MapComponent({ facilities, center }) {
 					<Marker
 						key={f.id}
 						position={[parseFloat(f.lat), parseFloat(f.lon)]}
-						icon={defaultIcon}
+						icon={getIconForCategory(f.category) || defaultIcon}
 					>
 						<Popup>
 							<strong>{(f.name && String(f.name).trim()) ? f.name : 'Unknown'}</strong> <br />

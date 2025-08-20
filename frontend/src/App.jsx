@@ -8,6 +8,7 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [radius, setRadius] = useState(1500);
+  const [summary, setSummary] = useState('');
 
   const handleSearch = async () => {
     setError(null);
@@ -33,6 +34,26 @@ function App() {
       }
       const nearbyData = await nearbyRes.json();
       setPlaces(nearbyData);
+
+      // 3. Ask backend to summarize
+      try {
+        const sumRes = await fetch('/api/summarize', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ facilities: nearbyData, address, radius })
+        });
+        if (sumRes.ok) {
+          const sumData = await sumRes.json();
+          setSummary(sumData.summary || '');
+        } else {
+          const text = await sumRes.text();
+          console.error('Summarize error:', text);
+          setSummary('');
+        }
+      } catch (_) {
+        console.error('Summarize request failed');
+        setSummary('');
+      }
     } catch (e) {
       setError(e.message || 'Something went wrong');
     } finally {
@@ -58,6 +79,11 @@ function App() {
       {error && <div style={{ color: 'red', marginTop: '0.5rem' }}>{error}</div>}
 
       {coords && <MapComponent facilities={places.filter(f => f.lat && f.lon)} center={coords} />}
+      {summary && (
+        <div style={{ marginTop: '1rem', padding: '0.75rem 1rem', border: '1px solid #ddd', borderRadius: 8, background: '#fafafa' }}>
+          {summary}
+        </div>
+      )}
     </div>
 
   );
