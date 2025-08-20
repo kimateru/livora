@@ -33,28 +33,28 @@ app.get('/geocode', async (req, res) => {
     }
 });
 
-// Route: get nearby POIs using Overpass API
 // Route: get nearby specific POIs using Overpass API
 app.get('/nearby', async (req, res) => {
-    const { lat, lon, radius = 100 } = req.query; // default 300 meters
+    const { lat, lon, radius = 1500 } = req.query; // default 300 meters
     if (!lat || !lon) return res.status(400).json({ error: 'Lat and Lon are required' });
 
     const query = `
-      [out:json];
+      [out:json][timeout:25];
       (
-       (
-  node(around:${radius},${lat},${lon})[amenity~"^(hospital|clinic|park|fuel)$"][amenity!="bench"];
-  node(around:${radius},${lat},${lon})[shop~"^(supermarket|convenience|greengrocer|butcher|bakery|food|cheese|beverages)$"][amenity!="bench"];
-  
-  way(around:${radius},${lat},${lon})[amenity~"^(hospital|clinic|park|fuel)$"];
-  way(around:${radius},${lat},${lon})[shop~"^(supermarket|convenience|greengrocer|butcher|bakery|food|cheese|beverages)$"];
-  
-  relation(around:${radius},${lat},${lon})[amenity~"^(hospital|clinic|park|fuel)$"];
-  relation(around:${radius},${lat},${lon})[shop~"^(supermarket|convenience|greengrocer|butcher|bakery|food|cheese|beverages)$"];
-);
-out center;
+        // Restaurants, cafes, fast food, fuel, and marketplaces (amenity)
+        node(around:${radius},${lat},${lon})[amenity~"^(restaurant|fast_food|cafe|fuel|food_court|ice_cream|marketplace)$"];
+        way(around:${radius},${lat},${lon})[amenity~"^(restaurant|fast_food|cafe|fuel|food_court|ice_cream|marketplace)$"];
+        relation(around:${radius},${lat},${lon})[amenity~"^(restaurant|fast_food|cafe|fuel|food_court|ice_cream|marketplace)$"];
 
+        // Public parks and similar leisure areas
+        node(around:${radius},${lat},${lon})[leisure~"^(park|garden|recreation_ground|common|nature_reserve)$"];
+        way(around:${radius},${lat},${lon})[leisure~"^(park|garden|recreation_ground|common|nature_reserve)$"];
+        relation(around:${radius},${lat},${lon})[leisure~"^(park|garden|recreation_ground|common|nature_reserve)$"];
 
+        // Grocery-related shops
+        node(around:${radius},${lat},${lon})[shop~"^(supermarket|hypermarket|convenience|greengrocer|butcher|bakery|grocery|deli|farm|organic|health_food|cheese|beverages)$"];
+        way(around:${radius},${lat},${lon})[shop~"^(supermarket|hypermarket|convenience|greengrocer|butcher|bakery|grocery|deli|farm|organic|health_food|cheese|beverages)$"];
+        relation(around:${radius},${lat},${lon})[shop~"^(supermarket|hypermarket|convenience|greengrocer|butcher|bakery|grocery|deli|farm|organic|health_food|cheese|beverages)$"];
       );
       out center;
     `;
@@ -66,19 +66,33 @@ out center;
             { headers: { 'Content-Type': 'text/plain' } }
         );
         const results = response.data.elements.map(el => {
-            // Determine category
+            const tags = el.tags || {};
+
+            // Determine category with broader fallback
             let category = null;
-            if (el.tags?.amenity) category = el.tags.amenity;
-            else if (el.tags?.shop) category = el.tags.shop;
-          
-            // Determine display name
-            let name = el.tags?.name || category || 'Unknown';
-          
-            let lat = el.lat || el.center?.lat;
-            let lon = el.lon || el.center?.lon;
-          
+            if (tags.amenity && tags.amenity !== 'yes') category = tags.amenity;
+            else if (tags.shop && tags.shop !== 'yes') category = tags.shop;
+            else if (tags.leisure && tags.leisure !== 'yes') category = tags.leisure;
+            else if (tags.tourism && tags.tourism !== 'yes') category = tags.tourism;
+            else if (tags.building && tags.building !== 'yes') category = tags.building;
+
+            // Determine display name with multilingual and brand/operator fallback
+            let name = null;
+            if (tags.name) name = tags.name;
+            else {
+              // Check for any localized name like name:en, name:ro
+              const localized = Object.keys(tags).find(k => k.startsWith('name:'));
+              if (localized) name = tags[localized];
+            }
+            if (!name && tags.brand) name = tags.brand;
+            if (!name && tags.operator) name = tags.operator;
+            if (!name && category) name = category;
+            if (!name) name = 'Unknown';
+
+            const lat = el.lat || el.center?.lat;
+            const lon = el.lon || el.center?.lon;
             if (!lat || !lon) return null;
-          
+
             return {
               id: el.id,
               type: el.type,
