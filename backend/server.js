@@ -48,6 +48,128 @@ function buildHeuristicSummary(counts, address, radius) {
     return [firstLine, secondLine].filter(Boolean).join(' ');
 }
 
+// Personalize the base summary with simple rule-based signals from preferences
+function personalizeSummary(baseSummary, counts, preferences = {}) {
+    const prefs = {
+        stayType: 'live',
+        eatOut: 'sometimes',
+        groceries: 'weekly',
+        parksNeed: 'medium',
+        ...preferences
+    };
+
+    const get = (k) => counts[k] || 0;
+    const groceriesCount = ['supermarket','hypermarket','convenience','greengrocer','butcher','bakery','grocery','deli','farm','organic','health_food','cheese','beverages']
+        .reduce((s, k) => s + get(k), 0);
+    const diningCount = ['restaurant','fast_food','food_court','cafe','ice_cream']
+        .reduce((s, k) => s + get(k), 0);
+    const parksCount = ['park','garden','recreation_ground','common','nature_reserve']
+        .reduce((s, k) => s + get(k), 0);
+
+    let verdict = 'Overall fit: neutral.';
+    let score = 0;
+
+    // Eating out preference
+    if (prefs.eatOut === 'often') score += Math.min(diningCount, 5);
+    if (prefs.eatOut === 'rarely') score += 1; // neutral
+
+    // Groceries preference
+    if (prefs.groceries === 'daily') score += Math.min(groceriesCount, 4);
+    if (prefs.groceries === 'few_times_week') score += Math.min(groceriesCount, 3);
+
+    // Parks need
+    if (prefs.parksNeed === 'high') score += parksCount >= 2 ? 3 : -3;
+    if (prefs.parksNeed === 'medium') score += parksCount >= 1 ? 1 : -1;
+
+    // Travel vs live: weight dining for travel, groceries/parks for live
+    if (prefs.stayType === 'travel') score += diningCount >= 2 ? 2 : 0;
+    if (prefs.stayType === 'live') score += (groceriesCount >= 2 ? 2 : -1) + (parksCount >= 1 ? 1 : -1);
+
+    if (score >= 6) verdict = 'Overall fit: great for your preferences.';
+    else if (score >= 3) verdict = 'Overall fit: good match.';
+    else if (score <= -2) verdict = 'Overall fit: may not align well with your needs.';
+
+    return `${baseSummary} ${verdict}`.trim();
+}
+
+// Build structured ratings and verdict heuristically
+function buildHeuristicRatings(groups, preferences, baseSummary) {
+    const prefs = {
+        stayType: 'live',
+        eatOut: 'sometimes',
+        groceries: 'weekly',
+        parksNeed: 'medium',
+        ...preferences
+    };
+
+    const clamp = (n) => Math.max(0, Math.min(10, Math.round(n)));
+
+    const scoreFood = (count, pref) => {
+        if (pref === 'often') return clamp(count >= 5 ? 10 : count >= 3 ? 8 : count >= 2 ? 6 : count === 1 ? 4 : 2);
+        if (pref === 'sometimes') return clamp(count >= 5 ? 9 : count >= 3 ? 8 : count >= 2 ? 7 : count === 1 ? 6 : 5);
+        // rarely
+        return clamp(count === 0 ? 8 : 9);
+    };
+    const scoreGroceries = (count, pref) => {
+        if (pref === 'daily') return clamp(count >= 4 ? 10 : count >= 3 ? 9 : count >= 2 ? 7 : count === 1 ? 5 : 1);
+        if (pref === 'few_times_week') return clamp(count >= 4 ? 9 : count >= 3 ? 8 : count >= 2 ? 7 : count === 1 ? 6 : 3);
+        if (pref === 'weekly') return clamp(count >= 3 ? 9 : count >= 2 ? 8 : count === 1 ? 7 : 6);
+        // rarely
+        return clamp(count === 0 ? 8 : 9);
+    };
+    const scoreParks = (count, need) => {
+        if (need === 'high') return clamp(count >= 3 ? 9 : count === 2 ? 7 : count === 1 ? 4 : 0);
+        if (need === 'medium') return clamp(count >= 3 ? 9 : count === 2 ? 8 : count === 1 ? 7 : 6);
+        // low need: lack of parks should not penalize
+        return clamp(count === 0 ? 8 : 9);
+    };
+    const scoreFuel = (count) => clamp(count >= 3 ? 9 : count === 2 ? 8 : count === 1 ? 7 : 6);
+
+    const foodScore = scoreFood(groups.food, prefs.eatOut);
+    const groceriesScore = scoreGroceries(groups.groceries, prefs.groceries);
+    const parksScore = scoreParks(groups.parks, prefs.parksNeed);
+    const fuelScore = scoreFuel(groups.fuel);
+
+    const ratings = {
+        food: { score: foodScore, reason: `${groups.food} dining/coffee options nearby${prefs.eatOut === 'often' ? ' — you value this highly.' : prefs.eatOut === 'rarely' ? ' — low priority for you.' : '.'}` },
+        groceries: { score: groceriesScore, reason: `${groups.groceries} grocery options nearby${prefs.groceries === 'daily' ? ' — frequent shopping preference noted.' : prefs.groceries === 'rarely' ? ' — low priority for you.' : '.'}` },
+        parks: { score: parksScore, reason: `${groups.parks} park areas nearby${prefs.parksNeed === 'low' ? ' — low priority for you.' : prefs.parksNeed === 'high' && groups.parks === 0 ? ' — this is a mismatch for your needs.' : '.'}` },
+        fuel: { score: fuelScore, reason: `${groups.fuel} fuel stations nearby.` }
+    };
+
+    // Weighted overall score by importance of each category
+    const weights = {
+        food: prefs.eatOut === 'often' ? 1.0 : prefs.eatOut === 'sometimes' ? 0.7 : 0.3,
+        groceries: prefs.groceries === 'daily' ? 1.0 : prefs.groceries === 'few_times_week' ? 0.8 : prefs.groceries === 'weekly' ? 0.6 : 0.3,
+        parks: prefs.parksNeed === 'high' ? 0.9 : prefs.parksNeed === 'medium' ? 0.6 : 0.2,
+        fuel: 0.4
+    };
+    const weightedSum = foodScore * weights.food + groceriesScore * weights.groceries + parksScore * weights.parks + fuelScore * weights.fuel;
+    const weightTotal = weights.food + weights.groceries + weights.parks + weights.fuel;
+    const overallScore = clamp(weightedSum / weightTotal);
+
+    let verdict = 'neutral';
+    if (overallScore >= 8) verdict = 'great';
+    else if (overallScore >= 6) verdict = 'good';
+    else if (overallScore <= 3) verdict = 'poor';
+
+    const summary = personalizeSummary(baseSummary, {
+        restaurant: groups.food,
+        cafe: 0,
+        fast_food: 0,
+        supermarket: groups.groceries,
+        park: groups.parks,
+        fuel: groups.fuel
+    }, preferences);
+
+    return {
+        summary,
+        verdict,
+        overallScore,
+        ratings
+    };
+}
+
 // Route: get coordinates from address
 app.get('/geocode', async (req, res) => {
     const { address } = req.query;
@@ -151,10 +273,10 @@ app.get('/nearby', async (req, res) => {
 });
 
 
-// Optional: summarize nearby places using OpenAI if API key provided, otherwise fallback simple summary
+// Optional: summarize nearby places using OpenAI if API key provided, otherwise fallback structured summary
 app.post('/summarize', async (req, res) => {
     try {
-        const { facilities = [], address = '', radius } = req.body || {};
+        const { facilities = [], address = '', radius, preferences = {} } = req.body || {};
         const counts = facilities.reduce((acc, f) => {
             const key = f.category || 'unknown';
             acc[key] = (acc[key] || 0) + 1;
@@ -167,18 +289,25 @@ app.post('/summarize', async (req, res) => {
             .map(([k, v]) => `${k} (${v})`) 
             .join(', ');
 
-        const prompt = `Summarize the neighborhood amenities around the address "${address}" within ${radius || 'the specified'} meters. Focus on convenience and vibe. Data categories and counts: ${JSON.stringify(counts)}.`;
+        const groupCounts = {
+            food: ['restaurant','fast_food','food_court','cafe','ice_cream'].reduce((s,k)=>s+(counts[k]||0),0),
+            groceries: ['supermarket','hypermarket','convenience','greengrocer','butcher','bakery','grocery','deli','farm','organic','health_food','cheese','beverages'].reduce((s,k)=>s+(counts[k]||0),0),
+            parks: ['park','garden','recreation_ground','common','nature_reserve'].reduce((s,k)=>s+(counts[k]||0),0),
+            fuel: (counts['fuel']||0)
+        };
+
+        const prompt = `Given a user's preferences ${JSON.stringify(preferences)}, an address "${address}", a radius of ${radius} meters, and amenity counts ${JSON.stringify(groupCounts)}, produce a JSON object only (no extra text) with this exact shape: {"summary": string, "verdict": string, "overallScore": integer, "ratings": {"food": {"score": number, "reason": string}, "groceries": {"score": number, "reason": string}, "parks": {"score": number, "reason": string}, "fuel": {"score": number, "reason": string}}}. Scores are 0-10 integers. Keep it concise but specific.`;
 
         if (OPENAI_API_KEY) {
             try {
                 const resp = await axios.post('https://api.openai.com/v1/chat/completions', {
                     model: 'gpt-3.5-turbo',
                     messages: [
-                        { role: 'system', content: 'You are a concise neighborhood summarizer. One or two sentences max.' },
+                        { role: 'system', content: 'You output strictly valid minified JSON only.' },
                         { role: 'user', content: prompt }
                     ],
-                    temperature: 0.6,
-                    max_tokens: 120
+                    temperature: 0.3,
+                    max_tokens: 240
                 }, {
                     headers: {
                         'Authorization': `Bearer ${OPENAI_API_KEY}`,
@@ -186,17 +315,26 @@ app.post('/summarize', async (req, res) => {
                     }
                 });
                 const text = resp.data?.choices?.[0]?.message?.content?.trim();
-                return res.json({ summary: text || `Within ${radius}m: ${topCategories}.` });
+                let parsed;
+                try { parsed = JSON.parse(text); } catch (_) { parsed = null; }
+                if (parsed && parsed.ratings) {
+                    return res.json(parsed);
+                }
+                const base = buildHeuristicSummary(counts, address, radius);
+                const personalized = buildHeuristicRatings(groupCounts, preferences, base);
+                return res.json(personalized);
             } catch (err) {
                 console.error('OpenAI summarize failed:', err.response?.data || err.message);
-                const summary = buildHeuristicSummary(counts, address, radius);
-                return res.json({ summary, provider: 'fallback' });
+                const base = buildHeuristicSummary(counts, address, radius);
+                const personalized = buildHeuristicRatings(groupCounts, preferences, base);
+                return res.json({ ...personalized, provider: 'fallback' });
             }
         }
 
         // Fallback heuristic summary when no API key
-        const summary = buildHeuristicSummary(counts, address, radius);
-        return res.json({ summary });
+        const base = buildHeuristicSummary(counts, address, radius);
+        const personalized = buildHeuristicRatings(groupCounts, preferences, base);
+        return res.json(personalized);
     } catch (e) {
         return res.status(500).json({ error: e.message });
     }
